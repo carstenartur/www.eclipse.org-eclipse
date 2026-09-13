@@ -37,24 +37,25 @@ you can also use `Rerun Test` and `Rerun Test - Failures First` after the restar
 </details>
 
 You can now see more accurate execution times in the `JUnit` view.
-The updated test runner measures individual test durations directly in the test JVM using a monotonic clock,
-avoiding communication delays and distortions caused by system-clock adjustments.
+Individual test durations are measured in the test JVM using a monotonic clock,
+avoiding communication delays and system-clock adjustments.
 
-Select `Show Execution Time Details` from the view menu to display CPU time
-and, when available, its user-mode and system portions and non-CPU elapsed time beside each test.
-The new option is off by default and independent of `Show Execution Time`,
-so you can display either, both, or neither.
+Open the view menu (three dots at the top right).
+Select `Show Execution Time` for elapsed time and `Show Execution Time Details` for CPU diagnostics.
+The options are independent and only affect the display, not recording.
+The details option is off by default.
 
-![A CPU-bound test spends its elapsed time on the CPU, while a sleeping test records mostly non-CPU time](images/junit-execution-time-details.png)
+![The JUnit view menu with both Show Execution Time and Show Execution Time Details selected](images/junit-execution-time-menu.png)
 
-CPU times describe only the measured test-execution thread, not worker threads started by the test.
-Non-CPU time is elapsed time minus that thread's CPU time, not a separate measurement of waiting time.
-CPU details are shown when the selected run contains recorded CPU data.
-Recording these values requires support from the test JVM; displaying saved values does not require a running test JVM.
+With both options selected, compare CPU-intensive work with a test that mostly waits:
 
-Recorded timing details are retained with saved test runs,
-so you can revisit them in the JUnit history even after restarting Eclipse.
-Changing the display options does not change the recorded data.
+![A CPU-bound test uses CPU time while a sleeping test records mostly non-CPU time](images/junit-execution-time-details.png)
+
+CPU, user-mode and system values cover the measured test-execution thread, not worker threads started by the test.
+`non-CPU` is elapsed time minus that thread's CPU time, not a separate measurement of waiting time.
+
+CPU details are shown only when recorded data is available; recording requires support from the test JVM.
+Recorded details are retained in the JUnit history across restarts and can be viewed without a running test JVM.
 
 <!--
 ---
