@@ -45,6 +45,8 @@ and, when available, its user-mode and system portions and non-CPU elapsed time 
 The new option is off by default and independent of `Show Execution Time`,
 so you can display either, both, or neither.
 
+![A CPU-bound test spends its elapsed time on the CPU, while a sleeping test records mostly non-CPU time](images/junit-execution-time-details.png)
+
 CPU times describe only the measured test-execution thread, not worker threads started by the test.
 Non-CPU time is elapsed time minus that thread's CPU time, not a separate measurement of waiting time.
 CPU details appear only when the test JVM supports the measurement and the selected run contains the corresponding data.
