@@ -1,0 +1,115 @@
+name: Import Verified JUnit N&N Screenshots
+on:
+  push:
+    branches: [screenshots/import-junit-nn-assets]
+    paths: [.github/workflows/import-junit-nn-assets.yml]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  import:
+    if: github.repository == 'carstenartur/www.eclipse.org-eclipse'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Download the reviewed SWTBot artifact
+        uses: actions/download-artifact@v4
+        with:
+          repository: carstenartur/eclipse.jdt.ui
+          run-id: 34762715527
+          name: junit-nn-swtbot-screenshots
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: .capture-artifact
+      - name: Verify PNG hashes and update only the two N&N branches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+          
+          REPOSITORY = 'carstenartur/www.eclipse.org-eclipse'
+          assert os.environ['GITHUB_REPOSITORY'] == REPOSITORY
+          assert os.environ['GITHUB_REF_NAME'] == 'screenshots/import-junit-nn-assets'
+          ROOT = 'https://api.github.com/repos/' + REPOSITORY
+          
+          def api(method, path, data=None):
+              request = Request(ROOT + path,
+                  data=None if data is None else json.dumps(data).encode('utf-8'),
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                           'Accept': 'application/vnd.github+json',
+                           'Content-Type': 'application/json',
+                           'X-GitHub-Api-Version': '2022-11-28'}, method=method)
+              with urlopen(request, timeout=60) as response:
+                  return json.load(response)
+          
+          expected = {
+              'junit-execution-time-details.png': '460bbc093218b49846f46a886c8963a68a431d2fc6e1403917d9b1095104bbda',
+              'junit-imported-results-before-reload.png': '51062bc0c24dcd661ad58d3d9aecf3b07b40e46523136abbec3f34c6854e309b',
+              'junit-imported-results-after-reload.png': '98a6e75ef4464e12c171af8fe5c86ba4db8b3af3c6e5b828a3e37bd2535e9e74',
+          }
+          images = {}
+          for name, digest in expected.items():
+              matches = list(Path('.capture-artifact').rglob(name))
+              assert len(matches) == 1, (name, matches)
+              data = matches[0].read_bytes()
+              assert data.startswith(b'\x89PNG\r\n\x1a\n'), name
+              assert hashlib.sha256(data).hexdigest() == digest, name
+              images[name] = data
+          
+          updates = [
+              {
+                  'branch': 'n-and-n/junit-execution-timing-3163',
+                  'head': '20e42d194f316f16c224e1d0f6781377887c1176',
+                  'files': ['junit-execution-time-details.png'],
+                  'anchor': 'so you can display either, both, or neither.\n',
+                  'addition': '\n![A CPU-bound test spends its elapsed time on the CPU, while a sleeping test records mostly non-CPU time](images/junit-execution-time-details.png)\n',
+                  'title': 'Illustrate JUnit execution-time details with a real SWTBot capture',
+              },
+              {
+                  'branch': 'n-and-n/junit-imported-results-reload-3145',
+                  'head': 'ae201669078388acfdc8c0200c0c66da9e71c2b5',
+                  'files': ['junit-imported-results-before-reload.png', 'junit-imported-results-after-reload.png'],
+                  'anchor': 'Eclipse reports an error and keeps the previous results.\n',
+                  'addition': '\nAn imported report before reloading:\n\n![The imported report contains one failed test and shows its assertion failure](images/junit-imported-results-before-reload.png)\n\nAfter the source XML has been updated, choose `Reload Test Run` to display the new results:\n\n![The reloaded report contains two successful tests and no failures](images/junit-imported-results-after-reload.png)\n',
+                  'title': 'Illustrate imported JUnit result reloads with real SWTBot captures',
+              },
+          ]
+          
+          # Validate both branch heads and all Markdown anchors before writing anything.
+          for update in updates:
+              ref_path = '/git/refs/heads/' + quote(update['branch'], safe='/')
+              assert api('GET', ref_path)['object']['sha'] == update['head'], update['branch']
+              original = api('GET', '/contents/news/4.42/jdt.md?ref=' + update['head'])
+              text = base64.b64decode(original['content']).decode('utf-8')
+              assert text.count(update['anchor']) == 1, update['branch']
+              for name in update['files']:
+                  assert name not in text, name
+              update['text'] = text.replace(update['anchor'], update['anchor'] + update['addition'], 1)
+              update['tree'] = api('GET', '/git/commits/' + update['head'])['tree']['sha']
+              update['ref_path'] = ref_path
+          
+          for update in updates:
+              entries = []
+              for name in update['files']:
+                  data = images[name]
+                  blob = api('POST', '/git/blobs', {'encoding': 'base64', 'content': base64.b64encode(data).decode('ascii')})
+                  expected_blob = hashlib.sha1(b'blob ' + str(len(data)).encode('ascii') + b'\0' + data).hexdigest()
+                  assert blob['sha'] == expected_blob, name
+                  entries.append({'path': 'news/4.42/images/' + name, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
+              entries.append({'path': 'news/4.42/jdt.md', 'mode': '100644', 'type': 'blob', 'content': update['text']})
+              tree = api('POST', '/git/trees', {'base_tree': update['tree'], 'tree': entries})
+              message = update['title'] + '\n\nCaptured by the passing single SWTBot test in\ncarstenartur/eclipse.jdt.ui@a23defdbde9f735b603ca2842d644c7059980ba0,\nworkflow run 34762715527. Images were visually reviewed and their SHA-256\ndigests were checked before import. No screen contents were recreated.\n\nSigned-off-by: Carsten Hammer <carsten.hammer@t-online.de>'
+              commit = api('POST', '/git/commits', {'message': message, 'tree': tree['sha'],
+                  'parents': [update['head']], 'author': {'name': 'Carsten Hammer', 'email': 'carsten.hammer@t-online.de'}})
+              # A concurrent branch update must not be overwritten.
+              assert api('GET', update['ref_path'])['object']['sha'] == update['head'], update['branch']
+              api('PATCH', update['ref_path'], {'sha': commit['sha'], 'force': False})
+              assert api('GET', update['ref_path'])['object']['sha'] == commit['sha']
+              print(json.dumps({'branch': update['branch'], 'commit': commit['sha'], 'files': update['files']}))
+          PY
