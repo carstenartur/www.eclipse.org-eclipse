@@ -1,77 +1,228 @@
-name: Verify Compact JUnit N&N Review Updates
+name: Publish JUnit N&N Usage Screenshots
 on:
   push:
     branches: [screenshots/import-junit-nn-assets]
     paths: [.github/workflows/import-junit-nn-assets.yml]
 permissions:
-  contents: read
+  contents: write
   actions: read
 jobs:
-  verify:
+  publish:
     if: github.repository == 'carstenartur/www.eclipse.org-eclipse'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Download the reviewed compact SWTBot artifact
+      - name: Download the reviewed SWTBot run
         uses: actions/download-artifact@v4
         with:
           repository: carstenartur/eclipse.jdt.ui
-          run-id: 34765699188
+          run-id: 34767195456
           name: junit-nn-swtbot-screenshots
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: .capture-artifact
-      - name: Verify committed PNG bytes and Markdown references
+      - name: Install PNG crop support
+        run: python3 -m pip install 'Pillow==11.3.0'
+      - name: Verify captures and update the two existing documentation branches
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 - <<'PY'
           import base64
           import hashlib
+          import io
           import json
           import os
-          import struct
+          import re
           import xml.etree.ElementTree as ET
           from pathlib import Path
+          from urllib.parse import quote
           from urllib.request import Request, urlopen
+          from PIL import Image
 
-          root = 'https://api.github.com/repos/carstenartur/www.eclipse.org-eclipse'
-          def read(path):
-              request = Request(root + path, headers={
-                  'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
-                  'Accept': 'application/vnd.github+json'})
+          repository = 'carstenartur/www.eclipse.org-eclipse'
+          assert os.environ['GITHUB_REPOSITORY'] == repository
+          assert os.environ['GITHUB_REF_NAME'] == 'screenshots/import-junit-nn-assets'
+          root = 'https://api.github.com/repos/' + repository
+          def api(method, path, data=None):
+              request = Request(root + path,
+                  data=None if data is None else json.dumps(data).encode(),
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                           'Accept': 'application/vnd.github+json',
+                           'Content-Type': 'application/json'}, method=method)
               with urlopen(request, timeout=60) as response:
                   return json.load(response)
+
+          def blob_sha(data):
+              return hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
 
           captures = Path('.capture-artifact')
           reports = list(captures.rglob('TEST-*.xml'))
           assert len(reports) == 1
           report = ET.parse(reports[0]).getroot()
           assert report.get('tests') == '1'
-          assert all(report.get(key, '0') == '0' for key in ('failures', 'errors', 'skipped'))
-          publications = [
-              ('258c87b754747b1a0378f5111ee39fef5e130732', {
-                  'junit-execution-time-details.png': 'a12861765e91eb3df6a3ddb99f7c6bf693ae641480fd69bddb213b370e66c1f7'}),
-              ('4fd5c3331d33f1c2e213621b343aacd42dd4693b', {
-                  'junit-imported-results-before-reload.png': '42f178aec893f112fbcf1528a3510856d67d789e475ad07275757221537db714',
-                  'junit-imported-results-after-reload.png': '9bf4b1148a60fc094c2d06eff3f9532f3d31b2b3cebbdb60c315f1cc8dfdd83f'}),
-          ]
-          for commit, images in publications:
-              document = read('/contents/news/4.42/jdt.md?ref=' + commit)
-              markdown = base64.b64decode(document['content']).decode('utf-8')
-              if 'junit-execution-time-details.png' in images:
-                  assert document['sha'] == '6d961a23daff892202412adfc555a19634b706d2'
-                  assert 'displaying saved values does not require a running test JVM.' in markdown
+          assert all(report.get(key) == '0' for key in ('failures', 'errors', 'skipped'))
+
+          # Crops contain unchanged native pixels: no scaling, annotation or compositing.
+          image_specs = {
+              'junit-execution-time-menu.png': (
+                  'junit-execution-time-menu.png',
+                  '3273787e2947709899ab599ee7e7231c5db6fc18d99f4151302c671921347532',
+                  (370, 0, 642, 245), (272, 245),
+                  '0af82e493e6f959e394debe89fb5c146fcc32ea9aa228c6b53a70f18779349bc'),
+              'junit-reload-test-run.png': (
+                  'junit-reload-tooltip-desktop.png',
+                  '80d66814591005a01fdcc161fae3a951f52ce1bd994facc79bca91c6929a7e3e',
+                  (970, 102, 1360, 184), (390, 82),
+                  '54648f45bdb54ce97626802347ffcdd8d44942c0df092ab07f2489b734fc19ec'),
+              'junit-execution-time-details.png': (
+                  'junit-execution-time-details.png',
+                  '7247067366f4ad32683cab3ae172249362fe29ee5006a5bb7904df348e5b332d',
+                  None, (700, 348),
+                  '33dc9bfd9b60cac88bee7572b46d6380ccde7facbb4402d9c4deebacb31b3c72'),
+              'junit-imported-results-after-reload.png': (
+                  'junit-imported-results-after-reload.png',
+                  'e5ca2aec97205e8d24d25b56d01d5793eb7ff0c5a10b43fe62d712b1647cd9ce',
+                  None, (700, 348),
+                  '833dd8da3ed12121f5fd1c710b37a70f6c12eedbcef6a3546f2069d43c665878'),
+          }
+          images = {}
+          for name, (source, digest, box, size, pixel_digest) in image_specs.items():
+              matches = list(captures.rglob(source))
+              assert len(matches) == 1, source
+              raw = matches[0].read_bytes()
+              assert hashlib.sha256(raw).hexdigest() == digest, source
+              original = Image.open(io.BytesIO(raw))
+              cropped = original if box is None else original.crop(box)
+              assert cropped.size == size, name
+              assert hashlib.sha256(cropped.convert('RGBA').tobytes()).hexdigest() == pixel_digest, name
+              if box is None:
+                  data = raw
               else:
-                  assert document['sha'] == '10b110ce3606d9a23346c32e4982979ecc7f3ed4'
-              for name, digest in images.items():
-                  matches = list(captures.rglob(name))
-                  assert len(matches) == 1, name
-                  captured = matches[0].read_bytes()
-                  assert hashlib.sha256(captured).hexdigest() == digest, name
-                  assert struct.unpack('>II', captured[16:24]) == (700, 348), name
-                  published = read('/contents/news/4.42/images/' + name + '?ref=' + commit)
-                  assert base64.b64decode(published['content']) == captured, name
-                  assert markdown.count('](images/' + name + ')') == 1, name
-                  print('Verified:', commit, name, digest, '700x348')
-          print('PASS: one SWTBot test; three exact native captures; correct Markdown and saved-CPU clarification.')
+                  stream = io.BytesIO()
+                  cropped.save(stream, format='PNG')
+                  data = stream.getvalue()
+              images[name] = data
+
+          timing_entry = '''### More Accurate JUnit Execution Times
+          <!-- https://github.com/eclipse-jdt/eclipse.jdt.ui/pull/3163 -->
+
+          <details>
+          <summary>Contributors</summary>
+
+          - [Carsten Hammer](https://github.com/carstenartur)
+          </details>
+
+          You can now see more accurate execution times in the `JUnit` view.
+          Individual test durations are measured in the test JVM using a monotonic clock,
+          avoiding communication delays and system-clock adjustments.
+
+          Open the view menu (three dots at the top right).
+          Select `Show Execution Time` for elapsed time and `Show Execution Time Details` for CPU diagnostics.
+          The options are independent and only affect the display, not recording.
+          The details option is off by default.
+
+          ![The JUnit view menu with both Show Execution Time and Show Execution Time Details selected](images/junit-execution-time-menu.png)
+
+          With both options selected, compare CPU-intensive work with a test that mostly waits:
+
+          ![A CPU-bound test uses CPU time while a sleeping test records mostly non-CPU time](images/junit-execution-time-details.png)
+
+          CPU, user-mode and system values cover the measured test-execution thread, not worker threads started by the test.
+          `non-CPU` is elapsed time minus that thread's CPU time, not a separate measurement of waiting time.
+
+          CPU details are shown only when recorded data is available; recording requires support from the test JVM.
+          Recorded details are retained in the JUnit history across restarts and can be viewed without a running test JVM.
+
+          '''
+          reload_entry = '''### Reload Imported JUnit Test Results
+          <!-- https://github.com/eclipse-jdt/eclipse.jdt.ui/pull/3145 -->
+
+          <details>
+          <summary>Contributors</summary>
+
+          - [Carsten Hammer](https://github.com/carstenartur)
+          </details>
+
+          You can now refresh results imported from a local XML file without importing it again.
+          After your external test run updates that same file, select the imported run in the `JUnit` view.
+          Click `Reload Test Run`, the refresh icon in the view's toolbar.
+          Its tooltip is `Reload the imported test results from their source file`:
+
+          ![The highlighted refresh button displays the tooltip Reload the imported test results from their source file](images/junit-reload-test-run.png)
+
+          The updated results replace the existing run at the same history position instead of adding a duplicate:
+
+          ![The reloaded report contains two successful tests and no failures](images/junit-imported-results-after-reload.png)
+
+          Reloading reads the file; it does not rerun tests or monitor subsequent file changes.
+          The command is enabled only for runs imported from a local file.
+          If the file cannot be read or contains invalid XML, Eclipse reports an error and keeps the previous results.
+
+          '''
+          updates = [
+              dict(branch='n-and-n/junit-execution-timing-3163',
+                  parent='258c87b754747b1a0378f5111ee39fef5e130732',
+                  old_blob='6d961a23daff892202412adfc555a19634b706d2',
+                  new_blob='789a08de3ea6772132e8cea0ad19b8a37863a35a',
+                  title='Show how to enable JUnit execution-time details',
+                  start='### More Accurate JUnit Execution Times\n',
+                  end='<!--\n---\n## Java Editor\n',
+                  entry=timing_entry,
+                  images=['junit-execution-time-menu.png', 'junit-execution-time-details.png'],
+                  remove=[]),
+              dict(branch='n-and-n/junit-imported-results-reload-3145',
+                  parent='4fd5c3331d33f1c2e213621b343aacd42dd4693b',
+                  old_blob='10b110ce3606d9a23346c32e4982979ecc7f3ed4',
+                  new_blob='06047e29af581ba5d03a1d2885a4058839f207e1',
+                  title='Show the JUnit reload button and its native tooltip',
+                  start='### Reload Imported JUnit Test Results\n',
+                  end='### JUnit Test Run History Survives Restarts\n',
+                  entry=reload_entry,
+                  images=['junit-reload-test-run.png', 'junit-imported-results-after-reload.png'],
+                  remove=['junit-imported-results-before-reload.png']),
+          ]
+          # Check every input and both branch heads before writing any object.
+          for update in updates:
+              ref = '/git/refs/heads/' + quote(update['branch'], safe='/')
+              assert api('GET', ref)['object']['sha'] == update['parent'], update['branch']
+              old = api('GET', '/contents/news/4.42/jdt.md?ref=' + update['parent'])
+              assert old['sha'] == update['old_blob']
+              text = base64.b64decode(old['content']).decode()
+              assert text.count(update['start']) == text.count(update['end']) == 1
+              a = text.index(update['start'])
+              b = text.index(update['end'], a)
+              result = text[:a] + update['entry'] + text[b:]
+              assert blob_sha(result.encode()) == update['new_blob'], update['branch']
+              links = re.findall(r'!\[[^\]]*\]\(images/([^)]*)\)', result)
+              assert sorted(links) == sorted(update['images']), links
+              update['text'] = result
+              update['ref'] = ref
+              update['tree'] = api('GET', '/git/commits/' + update['parent'])['tree']['sha']
+
+          blobs = {}
+          for name, data in images.items():
+              blob = api('POST', '/git/blobs', {'encoding':'base64', 'content':base64.b64encode(data).decode()})
+              assert blob['sha'] == blob_sha(data), name
+              blobs[name] = blob['sha']
+
+          for update in updates:
+              entries = [dict(path='news/4.42/images/' + name, mode='100644', type='blob', sha=blobs[name])
+                         for name in update['images']]
+              entries += [dict(path='news/4.42/images/' + name, mode='100644', type='blob', sha=None)
+                          for name in update['remove']]
+              entries.append(dict(path='news/4.42/jdt.md', mode='100644', type='blob', content=update['text']))
+              tree = api('POST', '/git/trees', {'base_tree':update['tree'], 'tree':entries})
+              message = update['title'] + '\n\nKeep two compact images: how to use the feature, then its result.\nShorten the entry while preserving the recording/display distinction,\nmeasurement scope, and reload limitations.\n\nNative captures: carstenartur/eclipse.jdt.ui@3110a1d5f32292123dcdb8d2d4f4149795dd3371\nPassing SWTBot run: 34767195456 (1 test, 0 failures/errors/skips).\nMenu crop: (370,0)-(642,245), 272x245 pixels.\nReload tooltip crop from desktop: (970,102)-(1360,184), 390x82 pixels.\nAll crop pixels verified against the reviewed source captures; no scaling\nor recreated UI content. Result images are unmodified 700x348 captures.\n\nSigned-off-by: Carsten Hammer <carsten.hammer@t-online.de>'
+              commit = api('POST', '/git/commits', {'message':message, 'tree':tree['sha'],
+                  'parents':[update['parent']],
+                  'author':{'name':'Carsten Hammer', 'email':'carsten.hammer@t-online.de'}})
+              assert api('GET', update['ref'])['object']['sha'] == update['parent'], update['branch']
+              api('PATCH', update['ref'], {'sha':commit['sha'], 'force':False})
+              published_doc = api('GET', '/contents/news/4.42/jdt.md?ref=' + commit['sha'])
+              assert published_doc['sha'] == update['new_blob']
+              for name in update['images']:
+                  published = api('GET', '/contents/news/4.42/images/' + name + '?ref=' + commit['sha'])
+                  assert base64.b64decode(published['content']) == images[name], name
+              print(json.dumps({'branch':update['branch'], 'commit':commit['sha'], 'images':update['images']}))
+          print('PASS: both existing N&N entries updated; four verified images; two images per entry.')
           PY
