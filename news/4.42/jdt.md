@@ -49,7 +49,8 @@ so you can display either, both, or neither.
 
 CPU times describe only the measured test-execution thread, not worker threads started by the test.
 Non-CPU time is elapsed time minus that thread's CPU time, not a separate measurement of waiting time.
-CPU details appear only when the test JVM supports the measurement and the selected run contains the corresponding data.
+CPU details are shown when the selected run contains recorded CPU data.
+Recording these values requires support from the test JVM; displaying saved values does not require a running test JVM.
 
 Recorded timing details are retained with saved test runs,
 so you can revisit them in the JUnit history even after restarting Eclipse.
