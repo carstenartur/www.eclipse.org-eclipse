@@ -29,6 +29,14 @@ without creating a duplicate entry.
 If the file cannot be read or contains invalid XML,
 Eclipse reports an error and keeps the previous results.
 
+An imported report before reloading:
+
+![The imported report contains one failed test and shows its assertion failure](images/junit-imported-results-before-reload.png)
+
+After the source XML has been updated, choose `Reload Test Run` to display the new results:
+
+![The reloaded report contains two successful tests and no failures](images/junit-imported-results-after-reload.png)
+
 The command is enabled only for test runs imported from a local file.
 Reloading is manual; changes to the XML file are not monitored automatically.
 
