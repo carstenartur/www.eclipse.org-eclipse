@@ -1,13 +1,13 @@
-name: Upload Reviewed Compact JUnit Screenshots
+name: Verify Compact JUnit N&N Review Updates
 on:
   push:
     branches: [screenshots/import-junit-nn-assets]
     paths: [.github/workflows/import-junit-nn-assets.yml]
 permissions:
-  contents: write
+  contents: read
   actions: read
 jobs:
-  upload:
+  verify:
     if: github.repository == 'carstenartur/www.eclipse.org-eclipse'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -20,7 +20,7 @@ jobs:
           name: junit-nn-swtbot-screenshots
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: .capture-artifact
-      - name: Verify and upload PNG blobs without moving any branches
+      - name: Verify committed PNG bytes and Markdown references
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -34,15 +34,11 @@ jobs:
           from pathlib import Path
           from urllib.request import Request, urlopen
 
-          repository = 'carstenartur/www.eclipse.org-eclipse'
-          assert os.environ['GITHUB_REPOSITORY'] == repository
-          root = 'https://api.github.com/repos/' + repository
-          def api(method, path, data=None):
-              request = Request(root + path, method=method,
-                  data=None if data is None else json.dumps(data).encode('utf-8'),
-                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
-                           'Accept': 'application/vnd.github+json',
-                           'Content-Type': 'application/json'})
+          root = 'https://api.github.com/repos/carstenartur/www.eclipse.org-eclipse'
+          def read(path):
+              request = Request(root + path, headers={
+                  'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                  'Accept': 'application/vnd.github+json'})
               with urlopen(request, timeout=60) as response:
                   return json.load(response)
 
@@ -52,28 +48,30 @@ jobs:
           report = ET.parse(reports[0]).getroot()
           assert report.get('tests') == '1'
           assert all(report.get(key, '0') == '0' for key in ('failures', 'errors', 'skipped'))
-          expected = {
-              'junit-execution-time-details.png': 'a12861765e91eb3df6a3ddb99f7c6bf693ae641480fd69bddb213b370e66c1f7',
-              'junit-imported-results-before-reload.png': '42f178aec893f112fbcf1528a3510856d67d789e475ad07275757221537db714',
-              'junit-imported-results-after-reload.png': '9bf4b1148a60fc094c2d06eff3f9532f3d31b2b3cebbdb60c315f1cc8dfdd83f',
-          }
-          images = {}
-          for name, digest in expected.items():
-              matches = list(captures.rglob(name))
-              assert len(matches) == 1, name
-              data = matches[0].read_bytes()
-              assert data.startswith(b'\x89PNG\r\n\x1a\n'), name
-              assert struct.unpack('>II', data[16:24]) == (700, 348), name
-              assert hashlib.sha256(data).hexdigest() == digest, name
-              images[name] = data
-
-          for name, data in images.items():
-              blob = api('POST', '/git/blobs', {
-                  'encoding': 'base64', 'content': base64.b64encode(data).decode('ascii')})
-              expected_blob = hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
-              assert blob['sha'] == expected_blob, name
-              saved = api('GET', '/git/blobs/' + blob['sha'])
-              assert base64.b64decode(saved['content']) == data, name
-              print(json.dumps({'name': name, 'sha': blob['sha'], 'sha256': expected[name]}))
-          print('Verified all three compact image blobs. No documentation branches were changed.')
+          publications = [
+              ('258c87b754747b1a0378f5111ee39fef5e130732', {
+                  'junit-execution-time-details.png': 'a12861765e91eb3df6a3ddb99f7c6bf693ae641480fd69bddb213b370e66c1f7'}),
+              ('4fd5c3331d33f1c2e213621b343aacd42dd4693b', {
+                  'junit-imported-results-before-reload.png': '42f178aec893f112fbcf1528a3510856d67d789e475ad07275757221537db714',
+                  'junit-imported-results-after-reload.png': '9bf4b1148a60fc094c2d06eff3f9532f3d31b2b3cebbdb60c315f1cc8dfdd83f'}),
+          ]
+          for commit, images in publications:
+              document = read('/contents/news/4.42/jdt.md?ref=' + commit)
+              markdown = base64.b64decode(document['content']).decode('utf-8')
+              if 'junit-execution-time-details.png' in images:
+                  assert document['sha'] == '6d961a23daff892202412adfc555a19634b706d2'
+                  assert 'displaying saved values does not require a running test JVM.' in markdown
+              else:
+                  assert document['sha'] == '10b110ce3606d9a23346c32e4982979ecc7f3ed4'
+              for name, digest in images.items():
+                  matches = list(captures.rglob(name))
+                  assert len(matches) == 1, name
+                  captured = matches[0].read_bytes()
+                  assert hashlib.sha256(captured).hexdigest() == digest, name
+                  assert struct.unpack('>II', captured[16:24]) == (700, 348), name
+                  published = read('/contents/news/4.42/images/' + name + '?ref=' + commit)
+                  assert base64.b64decode(published['content']) == captured, name
+                  assert markdown.count('](images/' + name + ')') == 1, name
+                  print('Verified:', commit, name, digest, '700x348')
+          print('PASS: one SWTBot test; three exact native captures; correct Markdown and saved-CPU clarification.')
           PY
