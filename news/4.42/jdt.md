@@ -19,26 +19,20 @@ A special thanks to everyone who [contributed to JDT](acknowledgements.md#java-d
 - [Carsten Hammer](https://github.com/carstenartur)
 </details>
 
-You can now refresh test results imported from a local XML file without importing the file again.
-After your external build updates the XML file,
-select the imported run in the `JUnit` view and choose `Reload Test Run` in the view's toolbar.
-This reloads the results from the file; it does not rerun the tests.
+You can now refresh results imported from a local XML file without importing it again.
+After your external test run updates that same file, select the imported run in the `JUnit` view.
+Click `Reload Test Run`, the refresh icon in the view's toolbar.
+Its tooltip is `Reload the imported test results from their source file`:
 
-The updated results replace the existing run at the same position in the test-run history,
-without creating a duplicate entry.
-If the file cannot be read or contains invalid XML,
-Eclipse reports an error and keeps the previous results.
+![The highlighted refresh button displays the tooltip Reload the imported test results from their source file](images/junit-reload-test-run.png)
 
-An imported report before reloading:
-
-![The imported report contains one failed test and shows its assertion failure](images/junit-imported-results-before-reload.png)
-
-After the source XML has been updated, choose `Reload Test Run` to display the new results:
+The updated results replace the existing run at the same history position instead of adding a duplicate:
 
 ![The reloaded report contains two successful tests and no failures](images/junit-imported-results-after-reload.png)
 
-The command is enabled only for test runs imported from a local file.
-Reloading is manual; changes to the XML file are not monitored automatically.
+Reloading reads the file; it does not rerun tests or monitor subsequent file changes.
+The command is enabled only for runs imported from a local file.
+If the file cannot be read or contains invalid XML, Eclipse reports an error and keeps the previous results.
 
 ### JUnit Test Run History Survives Restarts
 
