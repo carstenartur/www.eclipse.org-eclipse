@@ -21,69 +21,109 @@ jobs:
         with:
           ref: n-and-n/junit-disabled-parameterized-3144
           fetch-depth: 0
-
-      - name: Download the verified JDT UI screenshot artifact
+      - name: Download the verified source-and-results capture
         uses: actions/download-artifact@v4
         with:
           repository: carstenartur/eclipse.jdt.ui
-          run-id: 35388063715
-          name: junit-disabled-parameterized-nn-v7
+          run-id: 35391766013
+          name: junit-disabled-code-and-results
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: .capture-artifact
-
-      - name: Crop, verify and amend the single N&N commit
+      - name: Verify the exact capture and update the existing N&N commit
         env:
-          EXPECTED_HEAD: eba4b6b4b7b19488909dababb8ad2bf093c0af8e
+          EXPECTED_HEAD: 8fc00b3e661c018d37d93ec75e4917a36634a878
           BASE: eb4c8baafbb98fe8c3ce3d6d4652818e9f5fd024
           TARGET_BRANCH: n-and-n/junit-disabled-parameterized-3144
         run: |
-          python3 -m pip install --quiet pillow
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          python3 -m pip install --quiet pillow markdown-it-py
           python3 - <<'PY'
           from pathlib import Path
           from PIL import Image
+          from markdown_it import MarkdownIt
           import hashlib
+          import json
+          import shutil
+          import xml.etree.ElementTree as ET
 
           root = Path('.capture-artifact')
-          source = next(root.rglob('junit-disabled-parameterized-test.png'))
-          labels = next(root.rglob('junit-disabled-parameterized-test.txt')).read_text(encoding='utf-8')
-          assert 'enabledTest()' in labels
-          assert 'disabledParameterizedTest(String)' in labels
-
+          source = next(root.rglob('junit-disabled-parameterized-test-with-code.png'))
+          digest = hashlib.sha256(source.read_bytes()).hexdigest()
+          assert digest == '78e0512b5e9bab8c25f934d2950eaa2dc9072968d64fb95a97946d8175416dae', digest
+          revision = next(root.rglob('capture-source-commit.txt')).read_text().strip()
+          assert revision == '72bd398b8eb81eea195e25457c3c6dea26ddc248', revision
+          test_source = next(root.rglob('ATestCase.java')).read_text()
+          for annotation in ('@Disabled(', '@ParameterizedTest', '@ValueSource(strings = { "one", "two" })'):
+              assert annotation in test_source
+          evidence = next(root.rglob('code-and-results-evidence.txt')).read_text()
+          assert 'total=2\nstarted=2\nskipped=1\nfailures=0\nerrors=0' in evidence
+          assert 'visibleAnnotations=3' in evidence
+          assert 'enabledTest()' in evidence and 'disabledParameterizedTest(String)' in evidence
+          report = next(root.rglob('TEST-*DisabledParameterizedCodeScreenshotTest.xml'))
+          suite = ET.parse(report).getroot()
+          assert int(suite.get('tests')) == 6, suite.attrib
+          assert all(int(suite.get(k, 0)) == 0 for k in ('failures', 'errors', 'skipped')), suite.attrib
           with Image.open(source) as image:
-              assert image.size == (555, 216), image.size
-              cropped = image.crop((0, 0, 555, 151))
-              target = Path('news/4.42/images/junit-disabled-parameterized-test.png')
-              target.parent.mkdir(parents=True, exist_ok=True)
-              cropped.save(target)
+              image.load()
+              assert image.size == (714, 497), image.size
+          target = Path('news/4.42/images/junit-disabled-parameterized-test.png')
+          shutil.copyfile(source, target)
+          assert target.read_bytes() == source.read_bytes()
 
-          with Image.open(target) as check:
-              assert check.size == (555, 151), check.size
-
-          markdown = Path('news/4.42/jdt.md').read_text(encoding='utf-8')
-          assert markdown.count('images/junit-disabled-parameterized-test.png') == 1
-          assert '### Disabled Parameterized Tests in the JUnit View' in markdown
-          assert 'Show Skipped Tests Only' in markdown
-          assert 'JUnit 5 and JUnit 6 runners' in markdown
-
-          data = target.read_bytes()
-          print('PNG:', target, len(data), 'bytes', hashlib.sha256(data).hexdigest(), '555x151')
-          print('Rows:', labels.strip().replace('\n', ' | '))
+          page = Path('news/4.42/jdt.md')
+          markdown = page.read_text()
+          old = '![The JUnit view shows one enabled test and one disabled parameterized test, with one skipped test in the run count](images/junit-disabled-parameterized-test.png)'
+          new = ('In the example below, the ordinary test and the disabled parameterized method give `Runs: 2/2 (1 skipped)`,\n'
+                 'even though the parameter source declares two values.\n\n'
+                 '![Java editor with an ordinary test and a method annotated with @Disabled, @ParameterizedTest and two input values, above the JUnit view showing Runs: 2/2 (1 skipped)](images/junit-disabled-parameterized-test.png)')
+          assert markdown.count(old) == 1
+          updated = markdown.replace(old, new)
+          assert updated.count('images/junit-disabled-parameterized-test.png') == 1
+          assert updated.split('### JUnit Test Run History Survives Restarts')[1] == markdown.split('### JUnit Test Run History Survives Restarts')[1]
+          parser = MarkdownIt('commonmark')
+          tokens = parser.parse(updated)
+          images = [child for token in tokens for child in (token.children or []) if child.type == 'image']
+          assert len(images) == 1 and images[0].attrGet('src') == 'images/junit-disabled-parameterized-test.png'
+          assert '@Disabled' in images[0].content
+          html = parser.render(updated)
+          assert '<h3>Disabled Parameterized Tests in the JUnit View</h3>' in html
+          assert '<details>' in html and '<summary>Contributors</summary>' in html
+          page.write_text(updated)
+          validation = {'capture_run': 35391766013, 'capture_revision': revision, 'sha256': digest,
+                        'width': 714, 'height': 497, 'tests': 6, 'failures': 0, 'errors': 0, 'skipped': 0,
+                        'image_copied_without_editing': True, 'markdown_image_reference_count': len(images)}
+          Path('.capture-artifact/publication-validation.json').write_text(json.dumps(validation, indent=2))
+          print(json.dumps(validation, indent=2))
+          print(evidence)
           PY
 
-          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           git config user.name "Carsten Hammer"
           git config user.email "carsten.hammer@t-online.de"
-          git add news/4.42/images/junit-disabled-parameterized-test.png
+          git add news/4.42/jdt.md news/4.42/images/junit-disabled-parameterized-test.png
           if git diff --cached --quiet; then
-            echo "Expected the final PNG to replace the temporary binary" >&2
+            echo 'Expected the source-and-results screenshot update' >&2
             exit 1
           fi
           git commit --amend --no-edit
-
           test "$(git rev-list --count "$BASE"..HEAD)" = "1"
           git diff --check "$BASE"..HEAD
-          git diff --name-only "$BASE"..HEAD
+          test "$(git diff --name-only "$BASE"..HEAD | wc -l)" = "2"
+          git diff --stat "$BASE"..HEAD
           git hash-object news/4.42/images/junit-disabled-parameterized-test.png
-          git push \
-            --force-with-lease=refs/heads/$TARGET_BRANCH:$EXPECTED_HEAD \
-            origin HEAD:refs/heads/$TARGET_BRANCH
+          git push --force-with-lease=refs/heads/$TARGET_BRANCH:$EXPECTED_HEAD origin HEAD:refs/heads/$TARGET_BRANCH
+          git fetch origin "$TARGET_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$(git rev-parse HEAD)"
+          git rev-parse HEAD > .capture-artifact/published-commit.txt
+      - name: Upload the published entry and verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-disabled-nn-with-code-published
+          retention-days: 14
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            news/4.42/jdt.md
+            news/4.42/images/junit-disabled-parameterized-test.png
+            .capture-artifact/publication-validation.json
+            .capture-artifact/published-commit.txt
