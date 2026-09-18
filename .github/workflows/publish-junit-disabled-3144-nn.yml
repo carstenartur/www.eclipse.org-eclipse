@@ -1,0 +1,89 @@
+name: Publish JUnit Disabled Parameterized N&N Screenshot
+
+on:
+  push:
+    branches: [screenshots/publish-junit-disabled-3144-nn]
+    paths:
+      - '.github/workflows/publish-junit-disabled-3144-nn.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    if: github.repository == 'carstenartur/www.eclipse.org-eclipse'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the N&N branch
+        uses: actions/checkout@v4
+        with:
+          ref: n-and-n/junit-disabled-parameterized-3144
+          fetch-depth: 0
+
+      - name: Download the verified JDT UI screenshot artifact
+        uses: actions/download-artifact@v4
+        with:
+          repository: carstenartur/eclipse.jdt.ui
+          run-id: 35388063715
+          name: junit-disabled-parameterized-nn-v7
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: .capture-artifact
+
+      - name: Crop, verify and amend the single N&N commit
+        env:
+          EXPECTED_HEAD: eba4b6b4b7b19488909dababb8ad2bf093c0af8e
+          BASE: eb4c8baafbb98fe8c3ce3d6d4652818e9f5fd024
+          TARGET_BRANCH: n-and-n/junit-disabled-parameterized-3144
+        run: |
+          python3 -m pip install --quiet pillow
+          python3 - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          import hashlib
+
+          root = Path('.capture-artifact')
+          source = next(root.rglob('junit-disabled-parameterized-test.png'))
+          labels = next(root.rglob('junit-disabled-parameterized-test.txt')).read_text(encoding='utf-8')
+          assert 'enabledTest()' in labels
+          assert 'disabledParameterizedTest(String)' in labels
+
+          with Image.open(source) as image:
+              assert image.size == (555, 216), image.size
+              cropped = image.crop((0, 0, 555, 151))
+              target = Path('news/4.42/images/junit-disabled-parameterized-test.png')
+              target.parent.mkdir(parents=True, exist_ok=True)
+              cropped.save(target)
+
+          with Image.open(target) as check:
+              assert check.size == (555, 151), check.size
+
+          markdown = Path('news/4.42/jdt.md').read_text(encoding='utf-8')
+          assert markdown.count('images/junit-disabled-parameterized-test.png') == 1
+          assert '### Disabled Parameterized Tests in the JUnit View' in markdown
+          assert 'Show Skipped Tests Only' in markdown
+          assert 'JUnit 5 and JUnit 6 runners' in markdown
+
+          data = target.read_bytes()
+          print('PNG:', target, len(data), 'bytes', hashlib.sha256(data).hexdigest(), '555x151')
+          print('Rows:', labels.strip().replace('\n', ' | '))
+          PY
+
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git config user.name "Carsten Hammer"
+          git config user.email "carsten.hammer@t-online.de"
+          git add news/4.42/images/junit-disabled-parameterized-test.png
+          if git diff --cached --quiet; then
+            echo "Expected the final PNG to replace the temporary binary" >&2
+            exit 1
+          fi
+          git commit --amend --no-edit
+
+          test "$(git rev-list --count "$BASE"..HEAD)" = "1"
+          git diff --check "$BASE"..HEAD
+          git diff --name-only "$BASE"..HEAD
+          git hash-object news/4.42/images/junit-disabled-parameterized-test.png
+          git push \
+            --force-with-lease=refs/heads/$TARGET_BRANCH:$EXPECTED_HEAD \
+            origin HEAD:refs/heads/$TARGET_BRANCH
