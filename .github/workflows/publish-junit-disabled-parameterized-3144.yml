@@ -1,0 +1,163 @@
+name: Publish Disabled Parameterized JUnit N&N
+
+on:
+  push:
+    branches: [screenshots/publish-junit-disabled-parameterized-3144]
+    paths: [.github/workflows/publish-junit-disabled-parameterized-3144.yml]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    if: github.repository == 'carstenartur/www.eclipse.org-eclipse'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download verified JDT screenshot artifact
+        uses: actions/download-artifact@v4
+        with:
+          repository: carstenartur/eclipse.jdt.ui
+          run-id: 35388063715
+          name: junit-disabled-parameterized-nn-v7
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: .capture-artifact
+
+      - name: Install image support
+        run: python3 -m pip install --quiet pillow
+
+      - name: Create one N&N commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+          from PIL import Image
+
+          REPO = 'carstenartur/www.eclipse.org-eclipse'
+          TARGET = 'n-and-n/junit-disabled-parameterized-3144'
+          BASE = 'eb4c8baafbb98fe8c3ce3d6d4652818e9f5fd024'
+          API = 'https://api.github.com/repos/' + REPO
+
+          def api(method, path, data=None):
+              request = Request(
+                  API + path,
+                  data=None if data is None else json.dumps(data).encode(),
+                  headers={
+                      'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                      'Accept': 'application/vnd.github+json',
+                      'Content-Type': 'application/json',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                  },
+                  method=method,
+              )
+              with urlopen(request, timeout=60) as response:
+                  return json.load(response)
+
+          # The final branch must still be the exact upstream master base.
+          ref = '/git/refs/heads/' + quote(TARGET, safe='/')
+          assert api('GET', ref)['object']['sha'] == BASE
+
+          matches = list(Path('.capture-artifact').rglob('junit-disabled-parameterized-test.png'))
+          assert len(matches) == 1, matches
+          source = matches[0]
+          raw = source.read_bytes()
+          assert hashlib.sha256(raw).hexdigest() == '0a30d865a1f93f372f7baa805c42230fd59250368528fde474445e1d31fee43e'
+
+          # Remove only the empty area below the counters and two result rows.
+          image = Image.open(source).convert('RGBA')
+          assert image.size == (555, 216)
+          cropped = image.crop((0, 0, 555, 150))
+          out = Path('junit-disabled-parameterized-test.png')
+          cropped.save(out)
+          assert Image.open(out).size == (555, 150)
+
+          base_file = api('GET', '/contents/news/4.42/jdt.md?ref=' + BASE)
+          markdown = base64.b64decode(base_file['content']).decode('utf-8')
+          anchor = '## JUnit\n\n### JUnit Test Run History Survives Restarts'
+          assert markdown.count(anchor) == 1
+
+          entry = '''## JUnit
+
+          ### Disabled Parameterized Tests in the JUnit View
+          <!-- https://github.com/eclipse-jdt/eclipse.jdt.ui/pull/3144 -->
+
+          <details>
+          <summary>Contributors</summary>
+
+          - [Carsten Hammer](https://github.com/carstenartur)
+          </details>
+
+          Disabled parameterized JUnit Jupiter tests are now shown correctly in the `JUnit` view.
+          When a parameterized method is annotated with `@Disabled`,
+          Eclipse displays it with the disabled-test icon and counts it once in the total and skipped counts instead of omitting it.
+
+          ![The JUnit view shows one enabled test and one disabled parameterized test, with one skipped test in the run count](images/junit-disabled-parameterized-test.png)
+
+          Disabled parameterized tests also appear in the flat layout and when `Show Skipped Tests Only` is enabled.
+          Their skipped state and counters are preserved when you export and re-import the test run.
+          This behavior is supported by both the JUnit 5 and JUnit 6 runners.
+
+          ### JUnit Test Run History Survives Restarts'''
+          # Dedent the heredoc-style literal without changing sentence-per-line layout.
+          entry = '\n'.join(line[10:] if line.startswith('          ') else line for line in entry.splitlines())
+          updated = markdown.replace(anchor, entry, 1)
+
+          img_data = out.read_bytes()
+          img_blob = api('POST', '/git/blobs', {
+              'encoding': 'base64',
+              'content': base64.b64encode(img_data).decode('ascii'),
+          })
+          md_blob = api('POST', '/git/blobs', {
+              'encoding': 'utf-8',
+              'content': updated,
+          })
+
+          base_commit = api('GET', '/git/commits/' + BASE)
+          tree = api('POST', '/git/trees', {
+              'base_tree': base_commit['tree']['sha'],
+              'tree': [
+                  {
+                      'path': 'news/4.42/jdt.md',
+                      'mode': '100644',
+                      'type': 'blob',
+                      'sha': md_blob['sha'],
+                  },
+                  {
+                      'path': 'news/4.42/images/junit-disabled-parameterized-test.png',
+                      'mode': '100644',
+                      'type': 'blob',
+                      'sha': img_blob['sha'],
+                  },
+              ],
+          })
+
+          commit = api('POST', '/git/commits', {
+              'message': '''Add disabled parameterized JUnit tests N&N for Eclipse 4.42
+
+          Document the corrected JUnit view handling from
+          eclipse-jdt/eclipse.jdt.ui#3144, including skipped counters, filtering,
+          flat layout and test-run export/import.
+
+          Signed-off-by: Carsten Hammer <carsten.hammer@t-online.de>'''.replace('          ', ''),
+              'tree': tree['sha'],
+              'parents': [BASE],
+              'author': {
+                  'name': 'Carsten Hammer',
+                  'email': 'carsten.hammer@t-online.de',
+              },
+          })
+
+          # Refuse to overwrite concurrent work.
+          assert api('GET', ref)['object']['sha'] == BASE
+          api('PATCH', ref, {'sha': commit['sha'], 'force': False})
+          print('Published commit:', commit['sha'])
+          print('Cropped screenshot SHA-256:', hashlib.sha256(img_data).hexdigest())
+          PY
