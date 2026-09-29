@@ -1,0 +1,168 @@
+name: Publish EnumSource N&N Draft
+
+on:
+  push:
+    branches: [screenshots/publish-junit-enumsource-3136]
+    paths:
+      - '.github/workflows/publish-junit-enumsource-nn.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    if: github.repository == 'carstenartur/www.eclipse.org-eclipse'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the clean N&N branch
+        uses: actions/checkout@v4
+        with:
+          ref: n-and-n/junit-enumsource-3136
+          fetch-depth: 2
+      - name: Download the verified native capture
+        uses: actions/download-artifact@v4
+        with:
+          repository: carstenartur/eclipse.jdt.ui
+          run-id: 36546940975
+          name: junit-enumsource-nn
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: .capture
+      - name: Validate and publish the single N&N commit
+        env:
+          BASE: 133d082d4d7b2a47f90f65445bcb0b0b9c656446
+          CAPTURE_SHA: f2ed2082700936fc6c147a8633687d0e19f404c9
+          FEATURE_SHA: 7bd8ddf82ff52d17e516cc48b22431dc63449b5f
+          IMAGE_DIGESTS: '{"junit-enumsource-exclude.png":"93ab21b10a5eeaba45bd4d5659a630d0b1215e3291ab5ac6e6d8552bc28450c1","junit-enumsource-reinclude.png":"2a2cf952bd166621ae7bd36ab6c4d72ff854173cdadb2eaf88fc435ded3bd21f"}'
+          NN_ENTRY: |
+            ### Exclude and Re-include Enum Test Values
+            <!-- https://github.com/eclipse-jdt/eclipse.jdt.ui/pull/3136 -->
+
+            <details>
+            <summary>Contributors</summary>
+
+            - [Carsten Hammer](https://github.com/carstenartur)
+            </details>
+
+            You can now change which enum values an `@EnumSource` parameterized test uses directly from the `JUnit` view.
+            After running the test, right-click an individual invocation and select `Exclude Enum Value`.
+            Eclipse updates the annotation in your Java source; rerun the test to apply the change.
+
+            ![Java source supplies RED, GREEN and BLUE; the GREEN invocation is selected with Exclude Enum Value highlighted in its context menu](images/junit-enumsource-exclude.png)
+
+            In this example, excluding `GREEN` creates an `EXCLUDE` filter.
+            The next run contains only `RED` and `BLUE`; `GREEN` is not counted as a skipped test.
+            To restore values from an `EXCLUDE` filter, right-click the parameterized method or one of its invocations
+            and open `Re-include Excluded Enum Values`.
+            Select `Re-include 'GREEN'` or `Re-include All Enum Values`, then rerun.
+
+            ![Java source excludes GREEN and the JUnit view shows two invocations; the open submenu offers Re-include All Enum Values and Re-include 'GREEN'](images/junit-enumsource-reinclude.png)
+
+            An explicit `INCLUDE` list is narrowed in place without changing its mode.
+            At least one enum value must remain.
+            The exclusion action is unavailable when Eclipse cannot safely identify the selected value,
+            for example with multiple argument sources or regular-expression filters.
+        run: |
+          test "$(git rev-parse HEAD)" = "$BASE"
+          python3 -m pip install --quiet pillow==11.3.0 markdown-it-py==3.0.0
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, json, os, shutil
+          import xml.etree.ElementTree as ET
+          from markdown_it import MarkdownIt
+          from PIL import Image
+
+          root = Path('.capture')
+          folder = next(root.rglob('capture-source-commit.txt')).parent
+          assert (folder / 'capture-source-commit.txt').read_text().strip() == os.environ['CAPTURE_SHA']
+          assert (folder / 'feature-source-commit.txt').read_text().strip() == os.environ['FEATURE_SHA']
+          expected_counts = {'EnumSourceNewAndNoteworthyTest': 1, 'EnumSourceFilterTest': 12, 'EnumSourceSafetyTest': 9}
+          for name, count in expected_counts.items():
+              reports = list(root.rglob('TEST-org.eclipse.jdt.junit.tests.' + name + '.xml'))
+              assert len(reports) == 1, (name, reports)
+              report = ET.parse(reports[0]).getroot()
+              assert int(report.get('tests', 0)) == count, report.attrib
+              assert all(int(report.get(k, 0)) == 0 for k in ('failures', 'errors', 'skipped')), report.attrib
+
+          expected_digests = json.loads(os.environ['IMAGE_DIGESTS'])
+          images = {}
+          for name, expected in expected_digests.items():
+              source = folder / name
+              data = source.read_bytes()
+              assert hashlib.sha256(data).hexdigest() == expected, name
+              with Image.open(source) as image:
+                  image.load()
+                  assert image.format == 'PNG' and image.size == (714, 607)
+                  images[name] = {'width': image.width, 'height': image.height, 'sha256': expected}
+              target = Path('news/4.42/images') / name
+              assert not target.exists(), target
+              shutil.copyfile(source, target)
+              assert target.read_bytes() == data
+
+          path = Path('news/4.42/jdt.md')
+          base = path.read_text(encoding='utf-8')
+          entry = os.environ['NN_ENTRY'].rstrip() + '\n\n'
+          assert '### Exclude and Re-include Enum Test Values' not in base
+          marker = '## JUnit\n\n'
+          assert base.count(marker) == 1
+          updated = base.replace(marker, marker + entry, 1)
+          assert updated.replace(entry, '', 1) == base
+          path.write_text(updated, encoding='utf-8')
+          md = MarkdownIt('commonmark')
+          tokens = md.parse(entry)
+          refs = [c.attrGet('src') for t in tokens if t.children for c in t.children if c.type == 'image']
+          assert refs == ['images/' + name for name in expected_digests]
+          assert [t.tag for t in tokens if t.type == 'heading_open'] == ['h3']
+          for ref in refs:
+              assert (path.parent / ref).is_file()
+          assert entry.count('<details>') == entry.count('</details>') == 1
+          assert not any(line.endswith((' ', '\t')) for line in entry.splitlines())
+          assert all(marker not in updated for marker in ['<<<<<<<', '=======', '>>>>>>>'])
+          evidence = (folder / 'enumsource-evidence.txt').read_text()
+          assert 'after exclusion: total=2, skipped=0' in evidence
+          assert 'after re-including GREEN: total=3, skipped=0' in evidence
+          assert 'Re-include All Enum Values: total=3, skipped=0' in evidence
+          Path('.publication').mkdir(exist_ok=True)
+          Path('.publication/entry.md').write_text(entry)
+          Path('.publication/entry.html').write_text(md.render(entry))
+          Path('.publication/verification.json').write_text(json.dumps({
+              'feature_sha': os.environ['FEATURE_SHA'], 'capture_sha': os.environ['CAPTURE_SHA'],
+              'capture_run': 36546940975, 'tests': expected_counts,
+              'failures': 0, 'errors': 0, 'skipped': 0,
+              'images': images, 'base_preserved': True,
+          }, indent=2) + '\n')
+          print(Path('.publication/verification.json').read_text())
+          print(evidence)
+          PY
+          git config user.name "Carsten Hammer"
+          git config user.email "carsten.hammer@t-online.de"
+          git add news/4.42/jdt.md news/4.42/images/junit-enumsource-exclude.png news/4.42/images/junit-enumsource-reinclude.png
+          git diff --cached --check
+          python3 - <<'PY'
+          import subprocess
+          expected = ['news/4.42/images/junit-enumsource-exclude.png', 'news/4.42/images/junit-enumsource-reinclude.png', 'news/4.42/jdt.md']
+          changed = subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines()
+          assert sorted(changed) == expected, changed
+          PY
+          git commit -m "Add EnumSource exclude and re-include N&N for Eclipse 4.42" \
+            -m "Document eclipse-jdt/eclipse.jdt.ui#3136 with two native source-and-results captures showing the context-menu commands, changed argument source and invocation counts." \
+            -m "Signed-off-by: Carsten Hammer <carsten.hammer@t-online.de>"
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          test "$(git rev-list --count "$BASE"..HEAD)" = "1"
+          git diff --check "$BASE"..HEAD
+          git push origin HEAD:refs/heads/n-and-n/junit-enumsource-3136
+          git rev-parse HEAD > .publication/commit.txt
+          git diff --stat "$BASE"..HEAD
+      - name: Upload published entry and verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-enumsource-nn-published
+          retention-days: 30
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            .publication/
+            news/4.42/jdt.md
+            news/4.42/images/junit-enumsource-exclude.png
+            news/4.42/images/junit-enumsource-reinclude.png
